@@ -41,8 +41,10 @@ ENV/
 # Jupyter Notebook
 .ipynb_checkpoints
 
-# dotenv
+# dotenv (keep secrets out of git, but commit the example template)
 *.env
+.env.*
+!.env.example
 
 # OS
 .DS_Store

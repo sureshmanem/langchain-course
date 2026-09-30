@@ -38,14 +38,13 @@ Install dependencies:
 uv sync
 ```
 
-Optionally, create a `.env` file for LangSmith tracing (or an OpenAI key if you switch models):
+Copy the example env file and fill in your keys:
 
-```env
-LANGSMITH_API_KEY=your-langsmith-key
-LANGSMITH_TRACING=true
-LANGSMITH_PROJECT=agents-under-the-hood
-OPENAI_API_KEY=your-openai-key
+```bash
+cp .env.example .env
 ```
+
+`OPENAI_API_KEY` is only needed for the OpenAI provider, and the `LANGSMITH_*` keys are optional (for tracing).
 
 ## Running
 
@@ -76,10 +75,11 @@ Final Answer: ...
 
 ## Switching models
 
-The model is created with LangChain's provider-agnostic `init_chat_model`. To use OpenAI instead of Ollama, change the model string in `run_agent`:
+Choose the LLM with `--provider` (defaults to local Ollama):
 
-```python
-llm = init_chat_model("openai:gpt-5", temperature=0)
+```bash
+uv run 1_agent_loop_langchain_tool_calling.py --provider ollama   # ollama:qwen3:1.7b
+uv run 1_agent_loop_langchain_tool_calling.py --provider openai   # openai:gpt-5
 ```
 
-and set `OPENAI_API_KEY` in your `.env`.
+You can also set the default in `.env` with `LLM_PROVIDER=openai`. The OpenAI provider requires `OPENAI_API_KEY`. To change the model names, edit the `MODELS` dict in the script.
