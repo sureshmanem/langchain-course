@@ -7,6 +7,7 @@ A hands-on look at how LLM agents work internally. Instead of relying on a pre-b
 | File | Description |
 | --- | --- |
 | `1_agent_loop_langchain_tool_calling.py` | A shopping-assistant agent that uses `.bind_tools()` and a manual loop to call `get_product_price` and `apply_discount` tools until it reaches a final answer. |
+| `2_agent_loop_raw_function_calling.py` | The same agent without LangChain: calls the raw Ollama / OpenAI SDKs, with hand-written JSON tool schemas and manual LangSmith tracing. |
 | `1_agentLoopExplaination.md` | Step-by-step walkthrough of the agent loop script. |
 | `main.py` | Minimal entry point / hello-world. |
 | `pyproject.toml` / `uv.lock` | Project dependencies, managed with [uv](https://docs.astral.sh/uv/). |
@@ -82,4 +83,6 @@ uv run 1_agent_loop_langchain_tool_calling.py --provider ollama   # ollama:qwen3
 uv run 1_agent_loop_langchain_tool_calling.py --provider openai   # openai:gpt-5
 ```
 
-You can also set the default in `.env` with `LLM_PROVIDER=openai`. The OpenAI provider requires `OPENAI_API_KEY`. To change the model names, edit the `MODELS` dict in the script.
+The same `--provider` flag works for `2_agent_loop_raw_function_calling.py`.
+
+You can also set the default in `.env` with `LLM_PROVIDER=openai`. The OpenAI provider requires `OPENAI_API_KEY`. To change the model names, edit the `MODELS` dict in each script.

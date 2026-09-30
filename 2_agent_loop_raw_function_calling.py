@@ -1,15 +1,27 @@
 # Load environment variables (.env) before any LangSmith imports,
 # since langsmith reads LANGSMITH_API_KEY/LANGSMITH_TRACING at import time.
+import argparse
+import json
+import os
+from functools import cache
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Difference 1: Use the raw Ollama client instead of LangChain's init_chat_model
+# Difference 1: Use the raw provider SDKs instead of LangChain's init_chat_model.
+# Each provider has its own client, request shape and response shape.
 import ollama  # official Ollama python client; talks to the local Ollama server
+from openai import OpenAI  # official OpenAI python client; reads OPENAI_API_KEY from the env
 from langsmith import traceable  # sends a trace of this function's execution to LangSmith
 
 MAX_ITERATIONS = 10  # hard cap on the tool-call loop so a misbehaving model can't loop forever
-MODEL = "qwen3:1.7b"  # local Ollama model (must support the "tools" capability)
+# Selectable LLMs; the local Ollama model must support the "tools" capability
+MODELS = {
+    "ollama": "qwen3:1.7b",
+    "openai": "gpt-5",  # requires OPENAI_API_KEY
+}
+DEFAULT_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
 
 
 # --- Tools (plain Python functions, traced for LangSmith) ---
@@ -39,12 +51,15 @@ def apply_discount(price: float, discount_tier: str) -> float:
 # Difference 2: Without @tool, we must MANUALLY define the JSON schema for each function.
 # This is exactly what LangChain's @tool decorator generates automatically
 # from the function's type hints and docstring.
+# The same OpenAI-style schema works for both OpenAI and Ollama.
 tools_for_llm = [
     {
         "type": "function",  # OpenAI-style function-calling schema, which Ollama also accepts
         "function": {
             "name": "get_product_price",  # must match a key in tools_dict so we can dispatch the call
-            "description": "Look up the price of a product in the catalog.",  # the model reads this to decide when to call it
+            # The model reads this to decide when to call it; listing the products
+            # stops stricter models (e.g. gpt-5) from asking which laptop you mean
+            "description": "Look up the price of a product in the catalog. Available products: laptop, headphones, keyboard.",
             "parameters": {  # JSON Schema describing the arguments the model must produce
                 "type": "object",
                 "properties": {
@@ -94,27 +109,52 @@ tools_for_llm = [
 #       """
 # We keep the manual JSON version here so you can see what @tool hides from you.
 
-# --- Helper: traced Ollama call ---
+# --- Helper: traced LLM call ---
 # Difference 3: Without LangChain, we must manually trace LLM calls for LangSmith.
 
 
-@traceable(name="Ollama Chat", run_type="llm")  # run_type="llm" makes LangSmith render it as a model call
-def ollama_chat_traced(messages):
+@cache  # create the OpenAI client once, and only if the openai provider is used
+def get_openai_client() -> OpenAI:
+    return OpenAI()
+
+
+@traceable(name="LLM Chat", run_type="llm")  # run_type="llm" makes LangSmith render it as a model call
+def chat_traced(messages, provider: str):
     # Single round-trip to the model; tool schemas are sent on every call (no bind_tools equivalent)
-    return ollama.chat(model=MODEL, tools=tools_for_llm, messages=messages)
+    if provider == "openai":
+        response = get_openai_client().chat.completions.create(
+            model=MODELS["openai"],
+            tools=tools_for_llm,
+            messages=messages,
+            parallel_tool_calls=False,  # we run one tool per iteration, so ask for one at a time
+        )
+        return response.choices[0].message  # OpenAI wraps replies in a list of choices
+    response = ollama.chat(model=MODELS["ollama"], tools=tools_for_llm, messages=messages)
+    return response.message
+
+
+def parse_tool_call(tool_call, provider: str):
+    """Normalize a provider-specific tool call into (name, args dict, call id)."""
+    tool_name = tool_call.function.name
+    if provider == "openai":
+        # OpenAI returns arguments as a JSON string and gives each call an id
+        return tool_name, json.loads(tool_call.function.arguments), tool_call.id
+    # Ollama returns arguments already parsed into a dict and has no call id
+    return tool_name, tool_call.function.arguments, None
 
 
 # --- Agent Loop ---
 
 
-@traceable(name="Ollama Agent Loop")  # parent trace; the LLM and tool traces nest under it
-def run_agent(question: str):
+@traceable(name="Raw Agent Loop")  # parent trace; the LLM and tool traces nest under it
+def run_agent(question: str, provider: str = DEFAULT_PROVIDER):
     # Lookup table so we can call a python function by the name the model returns
     tools_dict = {
         "get_product_price": get_product_price,
         "apply_discount": apply_discount,
     }
 
+    print(f"Model: {provider}:{MODELS[provider]}")
     print(f"Question: {question}")
     print("=" * 60)
 
@@ -148,9 +188,8 @@ def run_agent(question: str):
     for iteration in range(1, MAX_ITERATIONS + 1):
         print(f"\n--- Iteration {iteration} ---")
 
-        # Difference 5: ollama.chat() directly instead of llm_with_tools.invoke()
-        response = ollama_chat_traced(messages=messages)
-        ai_message = response.message  # the assistant's reply: text content and/or tool_calls
+        # Difference 5: Call the provider SDK directly instead of llm_with_tools.invoke()
+        ai_message = chat_traced(messages, provider)  # assistant reply: text content and/or tool_calls
 
         tool_calls = ai_message.tool_calls  # None/empty when the model answers in plain text
 
@@ -161,9 +200,9 @@ def run_agent(question: str):
 
         # Process only the FIRST tool call — force one tool per iteration
         tool_call = tool_calls[0]
-        # Difference 6: Attribute access (.function.name) instead of dict access (.get("name"))
-        tool_name = tool_call.function.name
-        tool_args = tool_call.function.arguments  # already parsed into a dict by the Ollama client
+        # Difference 6: Attribute access (.function.name) instead of dict access (.get("name")),
+        # and each provider shapes the call differently, so we normalize it ourselves
+        tool_name, tool_args, tool_call_id = parse_tool_call(tool_call, provider)
 
         print(f"  [Tool Selected] {tool_name} with args: {tool_args}")
 
@@ -178,15 +217,33 @@ def run_agent(question: str):
         print(f"  [Tool Result] {observation}")
 
         # Append the assistant's tool-call message and the tool's result so
-        # the next LLM call has full context of what was requested and returned.
-        # Unlike ToolMessage, Ollama's tool message needs no tool_call_id.
-        messages.append(ai_message)
-        messages.append(
-            {
-                "role": "tool",
-                "content": str(observation),
-            }
-        )
+        # the next LLM call has full context of what was requested and returned
+        if provider == "openai":
+            # OpenAI requires every tool call in the assistant message to get a
+            # matching tool result, linked by tool_call_id (what ToolMessage does for us)
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": ai_message.content,
+                    "tool_calls": [tool_call.model_dump()],  # only the call we actually ran
+                }
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": str(observation),
+                }
+            )
+        else:
+            # Ollama accepts its own Message object back and needs no tool_call_id
+            messages.append(ai_message)
+            messages.append(
+                {
+                    "role": "tool",
+                    "content": str(observation),
+                }
+            )
 
     # Loop exhausted MAX_ITERATIONS without the model producing a final answer
     print("ERROR: Max iterations reached without a final answer")
@@ -194,6 +251,18 @@ def run_agent(question: str):
 
 
 if __name__ == "__main__":
-    print("Hello Ollama Agent (raw function calling)!")
+    parser = argparse.ArgumentParser(description="Raw function-calling agent loop")
+    parser.add_argument(
+        "--provider",
+        choices=MODELS.keys(),
+        default=DEFAULT_PROVIDER,
+        help="LLM to use (default: $LLM_PROVIDER or 'ollama')",
+    )
+    args = parser.parse_args()
+
+    print("Hello Raw Agent (function calling without LangChain)!")
     print()
-    result = run_agent("What is the price of a laptop after applying a gold discount?")
+    result = run_agent(
+        "What is the price of a laptop after applying a gold discount?",
+        provider=args.provider,
+    )
