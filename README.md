@@ -8,7 +8,6 @@ A hands-on look at how LLM agents work internally. Instead of relying on a pre-b
 | --- | --- |
 | `1_agent_loop_langchain_tool_calling.py` | A shopping-assistant agent that uses LangChain's `@tool`, `init_chat_model` and `.bind_tools()` with a manual loop to call `get_product_price` and `apply_discount` until it reaches a final answer. |
 | `2_agent_loop_raw_function_calling.py` | The same agent without LangChain: calls the raw Ollama / OpenAI SDKs, with hand-written JSON tool schemas and manual LangSmith tracing. |
-| `1_agentLoopExplaination.md` | Step-by-step walkthrough of the LangChain agent loop script. |
 | `main.py` | Minimal entry point / hello-world. |
 | `.env.example` | Template for the environment variables (provider, API keys, LangSmith). |
 | `pyproject.toml` / `uv.lock` | Project dependencies, managed with [uv](https://docs.astral.sh/uv/). |
@@ -19,8 +18,6 @@ A hands-on look at how LLM agents work internally. Instead of relying on a pre-b
 2. If the LLM responds with a tool call, run that Python function.
 3. Append the tool call and its result to the conversation.
 4. Repeat until the LLM answers in plain text (or `MAX_ITERATIONS` is reached).
-
-See [`1_agentLoopExplaination.md`](1_agentLoopExplaination.md) for a detailed explanation.
 
 ## LangChain vs. raw function calling
 
